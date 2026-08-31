@@ -1,3 +1,4 @@
+# Trigger: manual dispatch, dev push, or PR with build label
 name: Build
 
 on:
