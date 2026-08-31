@@ -636,7 +636,13 @@ func buildAnthropicCacheProjection(req *model.InternalLLMRequest) anthropicCache
 	}
 
 	projection := anthropicCacheProjection{cacheSignal: requestHasCacheControl(req)}
-	if !projection.cacheSignal && req.RawAPIFormat != model.APIFormatAnthropicMessage {
+	// 只在客户端显式声明 cache_control 时派生 prompt_cache_key。
+	// 之前的逻辑对 Anthropic 格式请求无条件放行，导致不带 cache_control 的
+	// Claude Code 等请求也被注入 prompt_cache_key；而 DeepSeek 类聚合渠道
+	// （如 TokenRhythm）不支持该字段，会直接 400 UNKNOWN_FIELD，请求被迫
+	// 故障转移到其他渠道。有缓存意图（cache_control）的请求仍会派生 key，
+	// 由支持该字段的渠道（SiliconFlow 等）消费。
+	if !projection.cacheSignal {
 		return projection
 	}
 

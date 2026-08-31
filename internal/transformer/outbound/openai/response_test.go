@@ -248,6 +248,40 @@ func TestConvertToResponsesRequestDerivesPromptCacheKeyFromAnthropicCacheControl
 	}
 }
 
+// TestConvertToResponsesRequestSkipsPromptCacheKeyWithoutCacheControl is a
+// regression test for the production issue where Anthropic-format requests
+// (e.g. Claude Code) that carry NO cache_control markers still got a
+// synthesized prompt_cache_key injected on the outbound payload. DeepSeek
+// aggregator channels such as TokenRhythm reject that field with
+// 400 UNKNOWN_FIELD, forcing a slow failover to another channel. Only
+// requests with an explicit cache signal (cache_control) should derive a key.
+func TestConvertToResponsesRequestSkipsPromptCacheKeyWithoutCacheControl(t *testing.T) {
+	system := "You are helpful."
+	user := "hello"
+	req := &model.InternalLLMRequest{
+		Model:        "gpt-5.4",
+		RawAPIFormat: model.APIFormatAnthropicMessage,
+		Messages: []model.Message{
+			{
+				Role:    "system",
+				Content: model.MessageContent{Content: &system},
+			},
+			{
+				Role:    "user",
+				Content: model.MessageContent{Content: &user},
+			},
+		},
+	}
+
+	out := ConvertToResponsesRequest(req)
+	if out.PromptCacheKey != nil {
+		t.Fatalf("expected no prompt_cache_key without cache_control, got %q", *out.PromptCacheKey)
+	}
+	if out.PromptCacheRetention != nil {
+		t.Fatalf("expected no retention without cache_control, got %v", out.PromptCacheRetention)
+	}
+}
+
 func TestConvertToResponsesRequestUsesStableAnthropicCachePrefix(t *testing.T) {
 	base := anthropicCacheRequest("latest question")
 	changedLatest := anthropicCacheRequest("different latest question")

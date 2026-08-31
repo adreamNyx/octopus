@@ -107,6 +107,36 @@ func TestBuildChatCompletionsRequestForwardsPromptCacheKey(t *testing.T) {
 	}
 }
 
+// TestBuildChatCompletionsRequestSkipsPromptCacheKeyWithoutCacheControl is
+// the chat-outbound regression test for the production issue: Anthropic-format
+// requests without cache_control must NOT get a synthesized prompt_cache_key,
+// because channels that reject the field (TokenRhythm 400 UNKNOWN_FIELD)
+// force an expensive failover. Explicit cache_control requests still derive
+// the key (see TestBuildChatCompletionsRequestDerivesAnthropicPromptCacheKey).
+func TestBuildChatCompletionsRequestSkipsPromptCacheKeyWithoutCacheControl(t *testing.T) {
+	system := "You are helpful."
+	user := "hello"
+	req := &model.InternalLLMRequest{
+		Model:        "deepseek-v4-flash-latest",
+		RawAPIFormat: model.APIFormatAnthropicMessage,
+		Messages: []model.Message{
+			{
+				Role:    "system",
+				Content: model.MessageContent{Content: &system},
+			},
+			{
+				Role:    "user",
+				Content: model.MessageContent{Content: &user},
+			},
+		},
+	}
+
+	wire := buildChatCompletionsRequest(req)
+	if wire.PromptCacheKey != nil {
+		t.Fatalf("expected no prompt_cache_key without cache_control, got %q", *wire.PromptCacheKey)
+	}
+}
+
 func TestBuildChatCompletionsRequestDerivesAnthropicPromptCacheKey(t *testing.T) {
 	first := anthropicCacheRequest("latest question")
 	second := anthropicCacheRequest("different latest question")
