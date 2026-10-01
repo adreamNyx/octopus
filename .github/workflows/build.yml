@@ -230,6 +230,9 @@ jobs:
             src="$1"; inner="$2"; out="$3"
             stage="$(mktemp -d)"
             cp "build/bin/${src}" "${stage}/${inner}"
+            # Keep the exec bit: internal/update.extractFile hits ETXTBSY on the
+            # running binary, removes it and recreates with the zip's mode.
+            chmod 755 "${stage}/${inner}"
             cp README.md LICENSE "${stage}/"
             (cd "${stage}" && zip -q -X "${GITHUB_WORKSPACE}/build/release/${out}" "${inner}" README.md LICENSE)
             rm -rf "${stage}"
