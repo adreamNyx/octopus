@@ -11,6 +11,10 @@ import (
 
 // ApplyParamOverride merges a JSON-object override into an outbound JSON request body.
 // Empty overrides, nil bodies, and non-object request bodies are ignored.
+//
+// A JSON null value for a key deletes that key from the request body, allowing
+// callers to strip unsupported fields (e.g. prompt_cache_key) before forwarding
+// the request upstream. Any other value sets the key as before.
 func ApplyParamOverride(request *http.Request, paramOverride *string) error {
 	if request == nil || request.Body == nil || paramOverride == nil || strings.TrimSpace(*paramOverride) == "" {
 		return nil
@@ -42,6 +46,11 @@ func ApplyParamOverride(request *http.Request, paramOverride *string) error {
 	}
 
 	for key, value := range override {
+		if value == nil {
+			// JSON null means "delete this field" instead of setting it.
+			delete(bodyMap, key)
+			continue
+		}
 		bodyMap[key] = value
 	}
 
