@@ -266,7 +266,7 @@ After selecting a group, the model table shows: **Model / Group / Endpoint Forma
 - **Add** (custom model): Models not exposed by upstream `/models` but actually usable can be **manually added** here (fill in model name + endpoint format).
 - **Project / Don't Project**: Stop/resume generating projected channels for this group.
 - **Filter**: Only misconfigured / Only with request history / Only disabled.
-- **Advanced**: Parameter override (JSON) for projected channels.
+- **Advanced**: Parameter override (JSON) for projected channels; a `null` value deletes the field — see "IX. Manual Channels → Parameter Override".
 - **More → Reset Model Endpoint Format**: Restore endpoint format to auto-detected results.
 
 **Group status badges**: Needs Key (no Key) / Needs Completion (has masked Key awaiting completion) / Suspended (system suspended projection) / Carried Over (recent sync didn't confirm new models, using last successful result).
@@ -420,6 +420,21 @@ After adding a manual channel, **you still need to add its models to a group on 
 > - For Zhipu **CodingPlan**, use a manual channel and select the correct channel type.
 > - For DeepSeek (opencode go) with Anthropic format, add a manual channel directly; if it only accepts chat format, the Anthropic→Chat conversion also works.
 > - Wrong channel type/format is the most common cause of "configured but no response".
+
+#### Parameter Override (param_override, JSON)
+
+Fill a JSON object in "Advanced Settings → Parameter Override"; it rewrites the request body before forwarding upstream:
+
+- **Value is `null`** → **deletes the field from the request body**;
+- **Value is not `null`** (string / number / bool / object) → **sets or overrides** the field.
+
+Typical use case: some upstreams reject extra client fields such as `prompt_cache_key` or `prompt_cache_retention` with `400 UNKNOWN_FIELD`. Configure the channel with:
+
+```json
+{"prompt_cache_key": null, "prompt_cache_retention": null}
+```
+
+and both fields are stripped before forwarding — no reliance on client behavior. The same semantics apply to the "Advanced → Parameter Override" option of projected site channels.
 
 ---
 
