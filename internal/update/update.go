@@ -18,7 +18,10 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
-const (
+// Update sources default to the upstream repository. Fork builds override
+// these via -ldflags -X so that the version check and the "update now"
+// action resolve to the fork's own releases instead.
+var (
 	updateUrl    = "https://github.com/Hureru/octopus/releases/latest/download"
 	updateApiUrl = "https://api.github.com/repos/Hureru/octopus/releases/latest"
 )

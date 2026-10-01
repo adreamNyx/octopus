@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
   push:
     branches: [dev]
+    tags: ['v*']
   pull_request:
     types: [labeled, synchronize]
 
@@ -65,10 +66,15 @@ jobs:
           BUILD_TIME="$(TZ='Asia/Shanghai' date +'%F %T %z')"
           GIT_VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo 'dev')"
           COMMIT_ID="$(git rev-parse --short HEAD)"
+          # Point the in-app updater at this fork's releases (internal/update defaults to upstream).
+          UPDATE_URL="https://github.com/adreamNyx/octopus/releases/latest/download"
+          UPDATE_API_URL="https://api.github.com/repos/adreamNyx/octopus/releases/latest"
           LDFLAGS="-X 'github.com/bestruirui/octopus/internal/conf.Version=${GIT_VERSION}' \
                    -X 'github.com/bestruirui/octopus/internal/conf.BuildTime=${BUILD_TIME}' \
                    -X 'github.com/bestruirui/octopus/internal/conf.Author=hureru' \
                    -X 'github.com/bestruirui/octopus/internal/conf.Commit=${COMMIT_ID}' \
+                   -X 'github.com/bestruirui/octopus/internal/update.updateUrl=${UPDATE_URL}' \
+                   -X 'github.com/bestruirui/octopus/internal/update.updateApiUrl=${UPDATE_API_URL}' \
                    -s -w"
 
           GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o build/bin/octopus-linux-x86_64        -ldflags="${LDFLAGS}" -tags=jsoniter ./
@@ -195,3 +201,48 @@ jobs:
           path: build/docker-images/
           retention-days: 7
           if-no-files-found: error
+
+  release:
+    name: release
+    # Only publish release assets when a v* tag is pushed.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (for README/LICENSE in zips)
+        uses: actions/checkout@v5
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: octopus-binaries-${{ github.sha }}
+          path: build/bin/
+
+      - name: Package zips
+        # Zip layout must match internal/update.unzip: the binary is extracted
+        # next to the running executable, so it must be named 'octopus'.
+        run: |
+          set -e
+          mkdir -p build/release
+          pack() {
+            src="$1"; inner="$2"; out="$3"
+            stage="$(mktemp -d)"
+            cp "build/bin/${src}" "${stage}/${inner}"
+            cp README.md LICENSE "${stage}/"
+            (cd "${stage}" && zip -q -X "${GITHUB_WORKSPACE}/build/release/${out}" "${inner}" README.md LICENSE)
+            rm -rf "${stage}"
+          }
+          pack octopus-linux-x86_64       octopus      octopus-linux-x86_64.zip
+          pack octopus-linux-arm64        octopus      octopus-linux-arm64.zip
+          pack octopus-windows-x86_64.exe octopus.exe  octopus-windows-x86_64.zip
+          pack octopus-darwin-arm64       octopus      octopus-darwin-arm64.zip
+          ls -la build/release/
+          unzip -l build/release/octopus-linux-arm64.zip
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/release/*.zip
+          generate_release_notes: true
