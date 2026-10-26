@@ -28,11 +28,49 @@ type MessagesInbound struct {
 	stopReason                *string
 	stopSequence              *string
 	toolCallIndices           map[int]bool // Track which tool call indices we've seen
-	inputToken                int64
+	// inputToken 相关的分词是延迟的：只有在上游没有上报 usage、需要兜底 message_start
+	// 的 input_token 时才会真正跑 tiktoken（见 estimateInputTokens）。
+	inputTokenParts []string
+	inputTokenFixed int64
+	inputTokenModel string
+	inputToken      int64
+	inputTokenReady bool
 
 	streamAggregator model.StreamAggregator
 	// storedResponse stores the non-stream response
 	storedResponse *model.InternalLLMResponse
+}
+
+// addInputTokenText 记录一段待估算的文本，不做分词。
+func (i *MessagesInbound) addInputTokenText(text, model string) {
+	if text == "" {
+		return
+	}
+	i.inputTokenParts = append(i.inputTokenParts, text)
+	if i.inputTokenModel == "" {
+		i.inputTokenModel = model
+	}
+}
+
+// addInputTokenFixed 记录与文本无关的结构性 token 开销。
+func (i *MessagesInbound) addInputTokenFixed(n int64) {
+	i.inputTokenFixed += n
+}
+
+// estimateInputTokens 按需分词估算 input token，结果缓存。
+// tiktoken 分词是请求路径上最贵的纯 CPU 操作，因此只在“上游没上报 usage”时执行。
+func (i *MessagesInbound) estimateInputTokens() int64 {
+	if i.inputTokenReady {
+		return i.inputToken
+	}
+	i.inputToken = i.inputTokenFixed
+	for _, part := range i.inputTokenParts {
+		i.inputToken += int64(tokenizer.CountTokens(part, i.inputTokenModel))
+	}
+	// 用完后释放对原始文本的引用，避免随请求/流状态一起长期持有大字符串。
+	i.inputTokenParts = nil
+	i.inputTokenReady = true
+	return i.inputToken
 }
 
 func geminiThoughtSignatureShim(block MessageContentBlock) string {
@@ -102,7 +140,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 					Content: systemContent,
 				},
 			})
-			i.inputToken += int64(tokenizer.CountTokens(*systemContent, chatReq.Model))
+			i.addInputTokenText(*systemContent, chatReq.Model)
 		} else if len(anthropicReq.System.MultiplePrompts) > 0 {
 			// Mark that system was originally in array format
 			chatReq.SetTransformerMetadataValue(model.TransformerMetadataAnthropicSystemArrayFormat, "true")
@@ -115,7 +153,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 					},
 					CacheControl: convertToLLMCacheControl(prompt.CacheControl),
 				}
-				i.inputToken += int64(tokenizer.CountTokens(prompt.Text, chatReq.Model))
+				i.addInputTokenText(prompt.Text, chatReq.Model)
 				messages = append(messages, msg)
 			}
 		}
@@ -139,7 +177,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 				Content: msg.Content.Content,
 			}
 			hasContent = true
-			i.inputToken += int64(tokenizer.CountTokens(*msg.Content.Content, chatReq.Model))
+			i.addInputTokenText(*msg.Content.Content, chatReq.Model)
 		} else if len(msg.Content.MultipleContent) > 0 {
 			contentParts := make([]model.MessageContentPart, 0, len(msg.Content.MultipleContent))
 
@@ -205,7 +243,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 						Text:         block.Text,
 						CacheControl: convertToLLMCacheControl(block.CacheControl),
 					})
-					i.inputToken += int64(tokenizer.CountTokens(*block.Text, chatReq.Model))
+					i.addInputTokenText(*block.Text, chatReq.Model)
 					hasContent = true
 				case "image":
 					if block.Source != nil {
@@ -253,7 +291,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 										Type: "text",
 										Text: contentBlock.Text,
 									})
-									i.inputToken += int64(tokenizer.CountTokens(*contentBlock.Text, chatReq.Model))
+									i.addInputTokenText(*contentBlock.Text, chatReq.Model)
 								}
 							}
 
@@ -387,7 +425,7 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 					AnthropicServerSpec: tool.RawBody,
 				}
 				tools = append(tools, llmTool)
-				i.inputToken += int64(tokenizer.CountTokens(tool.Name, chatReq.Model))
+				i.addInputTokenText(tool.Name, chatReq.Model)
 				continue
 			}
 			llmTool := model.Tool{
@@ -400,11 +438,11 @@ func (i *MessagesInbound) TransformRequest(ctx context.Context, body []byte) (*m
 				CacheControl: convertToLLMCacheControl(tool.CacheControl),
 			}
 			tools = append(tools, llmTool)
-			i.inputToken += int64(tokenizer.CountTokens(tool.Name, chatReq.Model))
-			i.inputToken += int64(tokenizer.CountTokens(tool.Description, chatReq.Model))
-			i.inputToken += int64(tokenizer.CountTokens(string(tool.InputSchema), chatReq.Model))
+			i.addInputTokenText(tool.Name, chatReq.Model)
+			i.addInputTokenText(tool.Description, chatReq.Model)
+			i.addInputTokenText(string(tool.InputSchema), chatReq.Model)
 		}
-		i.inputToken += int64(len(tools) * 3)
+		i.addInputTokenFixed(int64(len(tools) * 3))
 
 		chatReq.Tools = tools
 	}
@@ -781,12 +819,11 @@ func (i *MessagesInbound) TransformStream(ctx context.Context, stream *model.Int
 	if !i.hasStarted {
 		i.hasStarted = true
 
-		usage := &Usage{
-			InputTokens:  i.inputToken,
-			OutputTokens: 1,
-		}
+		usage := &Usage{OutputTokens: 1}
 		if stream.Usage != nil {
 			usage = i.convertUsage(stream.Usage)
+		} else {
+			usage.InputTokens = i.estimateInputTokens()
 		}
 
 		startEvent := StreamEvent{
@@ -1239,9 +1276,11 @@ func (i *MessagesInbound) TransformStreamEvents(ctx context.Context, events []mo
 			return nil
 		}
 		i.hasStarted = true
-		usage := &Usage{InputTokens: i.inputToken, OutputTokens: 1}
+		usage := &Usage{OutputTokens: 1}
 		if firstUsage != nil {
 			usage = i.convertUsage(firstUsage)
+		} else {
+			usage.InputTokens = i.estimateInputTokens()
 		}
 		startEvent := StreamEvent{
 			Type: "message_start",

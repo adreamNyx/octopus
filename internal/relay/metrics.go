@@ -38,6 +38,11 @@ type RelayMetrics struct {
 
 	TransportInputTokens *int
 	BillInputTokens      *int
+
+	// 上游请求体的延迟分词预估：只有在上游没有上报 usage、需要兜底时才真正分词。
+	// 正常请求（上游带 usage）零分词开销——分词是本服务最贵的一步纯 CPU 计算。
+	transportPayload      []byte
+	transportPayloadModel string
 	CacheReadTokens      *int
 	CacheWriteTokens     *int
 }
@@ -56,12 +61,29 @@ func (m *RelayMetrics) SetFirstTokenTime(t time.Time) {
 	m.FirstTokenTime = t
 }
 
+// SetTransportRequestPayload 记录实际发送到上游的请求体。
+//
+// 这里刻意不做分词：tiktoken 分词是本服务单请求里最贵的纯 CPU 操作（数毫秒/数 KB），
+// 而它的结果只在“上游未上报 usage”这一兜底路径和日志的 transport_input_tokens
+// 字段里用到。改为按需计算（见 ensureTransportInputTokens）后，绝大多数请求的
+// 转发路径上不再有任何分词开销。
+// 只有单 goroutine 会操作同一个 RelayMetrics（请求内顺序调用），无需加锁。
 func (m *RelayMetrics) SetTransportRequestPayload(payload []byte, modelName string) {
 	if len(payload) == 0 {
 		return
 	}
-	count := tokenizer.CountTokens(string(payload), modelName)
-	m.TransportInputTokens = intPtr(count)
+	m.transportPayload = payload
+	m.transportPayloadModel = modelName
+	m.TransportInputTokens = nil
+}
+
+// ensureTransportInputTokens 在首次需要时才分词，并把结果缓存下来。
+func (m *RelayMetrics) ensureTransportInputTokens() *int {
+	if m.TransportInputTokens == nil && len(m.transportPayload) > 0 {
+		count := tokenizer.CountTokens(string(m.transportPayload), m.transportPayloadModel)
+		m.TransportInputTokens = intPtr(count)
+	}
+	return m.TransportInputTokens
 }
 
 func (m *RelayMetrics) SetWSMode(mode model.RelayLogWSMode) {
@@ -117,6 +139,9 @@ func (m *RelayMetrics) SetInternalResponse(resp *transformerModel.InternalLLMRes
 	// 降级：上游未上报 input（usage 缺失，或 usage 中输入侧全为 0）时，用请求侧
 	// 估算的 TransportInputTokens 兜底，使 input token/费用不为 0；output 无法从
 	// 请求侧估算，保持 0。tiktoken 统一用 o200k_base，对 Claude/Gemini 为近似值。
+	if !inputReported {
+		m.ensureTransportInputTokens()
+	}
 	if !inputReported && m.TransportInputTokens != nil && *m.TransportInputTokens > 0 {
 		estimated := int64(*m.TransportInputTokens)
 		m.Stats.InputToken = estimated
@@ -163,8 +188,8 @@ func (m *RelayMetrics) SaveWithChannelStats(ctx context.Context, success bool, e
 	if success && (m.InternalResponse == nil || m.InternalResponse.Usage == nil ||
 		m.InternalResponse.Usage.EffectiveInputTokens() == 0) {
 		fallbackInput := 0
-		if m.TransportInputTokens != nil {
-			fallbackInput = *m.TransportInputTokens
+		if tokens := m.ensureTransportInputTokens(); tokens != nil {
+			fallbackInput = *tokens
 		}
 		log.Debugw("relay.usage_missing",
 			"actual_model", m.ActualModel,
