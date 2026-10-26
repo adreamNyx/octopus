@@ -29,6 +29,11 @@ func init() {
 }
 
 func latest(c *gin.Context) {
+	if !update.CheckEnabled() {
+		// 版本检测已关闭：直接回当前版本，前端因此不会出现“发现新版本可用”。
+		resp.Success(c, update.LatestInfo{TagName: conf.Version})
+		return
+	}
 	latestInfo, err := update.GetLatestInfo()
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
@@ -42,6 +47,10 @@ func getNowVersion(c *gin.Context) {
 }
 
 func updateFunc(c *gin.Context) {
+	if !update.CheckEnabled() {
+		resp.Error(c, http.StatusForbidden, "update check disabled")
+		return
+	}
 	err := update.UpdateCore()
 	if err != nil {
 		resp.Error(c, http.StatusInternalServerError, err.Error())
