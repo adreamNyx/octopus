@@ -34,6 +34,13 @@ type Database struct {
 	Path string `mapstructure:"path"`
 }
 
+// Update 控制管理面板的版本检测行为。
+type Update struct {
+	// Check=false 时后端不再向 GitHub 查询最新版本，"立即更新"按钮对应接口也直接拒绝：
+	// 该操作会用远端 release 覆盖本地二进制，自建/自编译部署必须能关掉。
+	Check bool `mapstructure:"check"`
+}
+
 type Startup struct {
 	CacheInitTimeoutSeconds int `mapstructure:"cache_init_timeout_seconds"`
 }
@@ -43,6 +50,7 @@ type Config struct {
 	Log      Log      `mapstructure:"log"`
 	Database Database `mapstructure:"database"`
 	Startup  Startup  `mapstructure:"startup"`
+	Update   Update   `mapstructure:"update"`
 }
 
 var AppConfig Config
@@ -105,4 +113,5 @@ func setDefaults() {
 	viper.SetDefault("log.access.slow_threshold_ms", 3000)
 	viper.SetDefault("log.relay.summary", true)
 	viper.SetDefault("startup.cache_init_timeout_seconds", 120)
+	viper.SetDefault("update.check", true)
 }

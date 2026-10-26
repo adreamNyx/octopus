@@ -26,6 +26,12 @@ var (
 	updateApiUrl = "https://api.github.com/repos/Hureru/octopus/releases/latest"
 )
 
+// CheckEnabled 报告是否允许向远端查询最新版本。
+// 由 config.update.check 控制（环境变量 OCTOPUS_UPDATE_CHECK），默认 true。
+func CheckEnabled() bool {
+	return conf.AppConfig.Update.Check
+}
+
 type LatestInfo struct {
 	TagName     string `json:"tag_name"`
 	PublishedAt string `json:"published_at"`
