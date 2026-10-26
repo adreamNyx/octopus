@@ -934,6 +934,28 @@ func TestRelayMetricsUsesResponseModelForCostLookup(t *testing.T) {
 	}
 }
 
+// 上游没上报 usage 时，请求侧估算才真正发生（按需分词），并用于兜底 input token。
+func TestRelayMetricsEstimatesTransportTokensOnDemand(t *testing.T) {
+	payload := []byte(`{"model":"gpt-4o-mini","input":"hello world hello world hello world"}`)
+
+	metrics := NewRelayMetrics(0, "alias-model", nil, &transformerModel.InternalLLMRequest{Model: "alias-model"})
+	metrics.SetTransportRequestPayload(payload, "gpt-4o-mini")
+	if metrics.TransportInputTokens != nil {
+		t.Fatalf("expected no eager tokenization on SetTransportRequestPayload, got %#v", metrics.TransportInputTokens)
+	}
+
+	// 响应没有 usage：此时才按需分词并兜底。
+	metrics.SetInternalResponse(&transformerModel.InternalLLMResponse{Model: "gpt-4o-mini"}, "gpt-4o-mini")
+
+	want := tokenizer.CountTokens(string(payload), "gpt-4o-mini")
+	if metrics.TransportInputTokens == nil || *metrics.TransportInputTokens != want {
+		t.Fatalf("expected transport input tokens to be estimated on demand (%d), got %#v", want, metrics.TransportInputTokens)
+	}
+	if metrics.Stats.InputToken != int64(want) {
+		t.Fatalf("expected input tokens to fall back to estimate %d, got %d", want, metrics.Stats.InputToken)
+	}
+}
+
 func TestRelayMetricsCapturesOpenAICompatibleInputBreakdown(t *testing.T) {
 	metrics := NewRelayMetrics(0, "alias-model", nil, &transformerModel.InternalLLMRequest{Model: "alias-model"})
 	payload := []byte(`{"model":"gpt-4o-mini","input":"hello world"}`)
@@ -949,8 +971,9 @@ func TestRelayMetricsCapturesOpenAICompatibleInputBreakdown(t *testing.T) {
 		},
 	}, "gpt-4o-mini")
 
-	if metrics.TransportInputTokens == nil || *metrics.TransportInputTokens != tokenizer.CountTokens(string(payload), "gpt-4o-mini") {
-		t.Fatalf("expected transport input tokens to be estimated from payload, got %#v", metrics.TransportInputTokens)
+	// 上游已上报 usage 时代码不做请求侧分词（省掉数毫秒 CPU），TransportInputTokens 保持 nil。
+	if metrics.TransportInputTokens != nil {
+		t.Fatalf("expected transport input tokens to stay unestimated when usage is reported, got %#v", metrics.TransportInputTokens)
 	}
 	if metrics.BillInputTokens == nil || *metrics.BillInputTokens != 300 {
 		t.Fatalf("expected billed input tokens to exclude cache read tokens, got %#v", metrics.BillInputTokens)
